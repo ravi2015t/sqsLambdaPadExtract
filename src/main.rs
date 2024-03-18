@@ -53,7 +53,10 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         .join(", ");
     let start_id: i32 = bek_ids[0].into();
 
-    let query = format!("SELECT * FROM pad WHERE pad.bekId IN ({})", bek_ids_str);
+    let query = format!(
+        "SELECT * FROM part_account WHERE part_account.bekId IN ({})",
+        bek_ids_str
+    );
     let _handle = tokio::task::spawn_blocking(move || {
         // let query = format!(
         //     "SELECT * FROM part_account where part_account.bekid>={} and part_account.bekid<={}",
