@@ -19,4 +19,10 @@ aws_lambda_events = { version = "0.15.0", default-features = false, features = [
 
 lambda_runtime = "0.10.0"
 tokio = { version = "1", features = ["macros"] }
+connectorx = { version = "0.3.2", features = ["dst_arrow", "src_postgres", "dst_arrow2"] }
+polars = { version = "0.32.1", features = ["polars-io", "parquet", "lazy", "dtype-struct"] }
+openssl = { version = "0.10.35", features = ["vendored"] }
+futures = "0.3.30"
+aws-sdk-s3 = "1.12.0"
+aws-config = "1.1.2"
 
