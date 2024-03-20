@@ -66,7 +66,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
             get_arrow2(&src_conn, None, queries).expect("run failed");
         let df: DataFrame = destination.polars().unwrap();
 
-        tracing::info!("Df schema {:?}", df.schema());
+        // tracing::info!("Df schema {:?}", df.schema());
         df
     })
     .await;
