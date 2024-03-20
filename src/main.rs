@@ -5,6 +5,7 @@ use connectorx::prelude::*;
 use futures::future::try_join_all;
 use lambda_runtime::{run, service_fn, tracing, Error, LambdaEvent};
 use polars::prelude::ParquetCompression;
+use polars::prelude::*;
 use polars::prelude::{df, DataFrame, ParquetWriter};
 use std::fs::File;
 use std::path::Path;
@@ -34,16 +35,12 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
 
     let start = Instant::now();
 
-    tracing::info!("Inside the lambda function. ");
-
     let source_conn = SourceConn::try_from(
         "postgresql://dbo:dbo@partaccountpoc-cluster.cluster-ctcsve9jprsn.us-east-1.rds.amazonaws.com:5432/partaccountpoc?cxprotocol=binary",
     )
     .expect("parse conn str failed");
 
     let src_conn = Arc::new(source_conn);
-
-    tracing::info!("After getting back connection.");
 
     //check batched reads.
     let bek_ids_str = bek_ids
@@ -57,28 +54,41 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         "SELECT * FROM part_account WHERE part_account.bekId IN ({})",
         bek_ids_str
     );
-    let _handle = tokio::task::spawn_blocking(move || {
-        // let query = format!(
-        //     "SELECT * FROM part_account where part_account.bekid>={} and part_account.bekid<={}",
-        //     start_id, end_id
-        // );
+    let df_handle = tokio::task::spawn_blocking(move || {
         let queries = &[CXQuery::from(query.as_str())];
+
+        // let mut destination: ArrowDestination =
+        //     get_arrow(&src_conn, None, queries).expect("run failed");
+
+        // let df = destination.arrow().unwrap();
+
         let destination: Arrow2Destination =
             get_arrow2(&src_conn, None, queries).expect("run failed");
-        let mut df: DataFrame = destination.polars().unwrap();
+        let df: DataFrame = destination.polars().unwrap();
 
-        ParquetWriter::new(
-            std::fs::File::create(format!("/tmp/result{}.parquet", start_id)).unwrap(),
-        )
-        .with_statistics(true)
-        .set_parallel(true)
-        .with_compression(ParquetCompression::Uncompressed)
-        .finish(&mut df)
-        .unwrap();
-
-        tracing::info!("Df size {:?}", df.height());
+        tracing::info!("Df schema {:?}", df.schema());
+        df
     })
     .await;
+
+    let df = df_handle.unwrap();
+
+    let mut handles = vec![];
+
+    // Iterate over bek_ids concurrently
+    for bek_id in bek_ids {
+        let df_clone = df.clone();
+        // Spawn a task for each bek_id and store the handle
+        let handle = tokio::spawn(async move {
+            filter_and_write_parquet(df_clone, bek_id).await;
+        });
+        handles.push(handle);
+    }
+
+    // Await on all handles to ensure all tasks have completed
+    for handle in handles {
+        handle.await.unwrap();
+    }
 
     transfer_to_s3(start_id).await;
 
@@ -86,6 +96,21 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     let message = format!("Transform was completed in time {:?} ", end - start);
 
     Ok(())
+}
+
+async fn filter_and_write_parquet(df: DataFrame, bek_id: u16) {
+    let mut filtered_df = df
+        .lazy()
+        .filter(col("bekid").eq(lit(bek_id)))
+        .collect()
+        .unwrap();
+
+    ParquetWriter::new(std::fs::File::create(format!("/tmp/result{}.parquet", bek_id)).unwrap())
+        .with_statistics(true)
+        .set_parallel(true)
+        .with_compression(ParquetCompression::Uncompressed)
+        .finish(&mut filtered_df)
+        .unwrap();
 }
 
 async fn transfer_to_s3(id: i32) {
