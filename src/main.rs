@@ -81,6 +81,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         // Spawn a task for each bek_id and store the handle
         let handle = tokio::spawn(async move {
             filter_and_write_parquet(df_clone, bek_id).await;
+            transfer_to_s3(bek_id.into()).await;
         });
         handles.push(handle);
     }
@@ -89,8 +90,6 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     for handle in handles {
         handle.await.unwrap();
     }
-
-    transfer_to_s3(start_id).await;
 
     let end = Instant::now();
     let message = format!("Transform was completed in time {:?} ", end - start);
