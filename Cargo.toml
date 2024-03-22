@@ -25,4 +25,5 @@ openssl = { version = "0.10.35", features = ["vendored"] }
 futures = "0.3.30"
 aws-sdk-s3 = "1.12.0"
 aws-config = "1.1.2"
+aws-sdk-sqs = "1.17.0"
 

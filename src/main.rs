@@ -1,17 +1,21 @@
-use aws_config::BehaviorVersion;
+use aws_config::{BehaviorVersion, Region};
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_sqs::Client;
 use connectorx::prelude::*;
-use futures::future::try_join_all;
 use lambda_runtime::{run, service_fn, tracing, Error, LambdaEvent};
 use polars::prelude::ParquetCompression;
 use polars::prelude::*;
-use polars::prelude::{df, DataFrame, ParquetWriter};
-use std::fs::File;
+use polars::prelude::{DataFrame, ParquetWriter};
+use std::convert::TryFrom;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::{convert::TryFrom, rc::Rc};
+use std::sync::Arc;
 use tokio::time::Instant;
+
+#[derive(Debug)]
+struct SQSMessage {
+    body: String,
+}
 
 /// This is the main body for the function.
 /// Write your code inside it.
@@ -48,7 +52,6 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         .map(|&id| id.to_string())
         .collect::<Vec<String>>()
         .join(", ");
-    let start_id: i32 = bek_ids[0].into();
 
     let query = format!(
         "SELECT * FROM part_account WHERE part_account.bekId IN ({})",
@@ -82,6 +85,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         let handle = tokio::spawn(async move {
             filter_and_write_parquet(df_clone, bek_id).await;
             transfer_to_s3(bek_id.into()).await;
+            write_to_sqs(bek_id.into()).await;
         });
         handles.push(handle);
     }
@@ -92,7 +96,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     }
 
     let end = Instant::now();
-    let message = format!("Transform was completed in time {:?} ", end - start);
+    tracing::debug!("Transform was completed in time {:?} ", end - start);
 
     Ok(())
 }
@@ -120,7 +124,7 @@ async fn transfer_to_s3(id: i32) {
     let filename = format!("/tmp/result{}.parquet", id);
     let body = ByteStream::from_path(Path::new(&filename)).await;
 
-    let s3_key = format!("results/result{}.parquet", id);
+    let s3_key = format!("part_account_from_rds/{}/pa_detail.parquet", id);
 
     let response = s3_client
         .put_object()
@@ -132,7 +136,7 @@ async fn transfer_to_s3(id: i32) {
 
     match response {
         Ok(_) => {
-            tracing::info!(
+            tracing::debug!(
                 filename = %filename,
                 "data successfully stored in S3",
             );
@@ -147,6 +151,30 @@ async fn transfer_to_s3(id: i32) {
             );
         }
     }
+}
+
+async fn write_to_sqs(id: i32) {
+    let region = Region::new("us-east-1");
+    let shared_config = aws_config::from_env().region(region).load().await;
+    let client = Client::new(&shared_config);
+    let queue_url = "".to_string();
+    let message = SQSMessage {
+        body: format!("bekId:{}", id),
+    };
+
+    let res = send(&client, &queue_url, &message).await;
+    tracing::info!("Repsonse after send {:?}", res.unwrap());
+}
+
+async fn send(client: &Client, queue_url: &String, message: &SQSMessage) -> Result<(), Error> {
+    let rsp = client
+        .send_message()
+        .queue_url(queue_url)
+        .message_body(&message.body)
+        .send()
+        .await?;
+    tracing::debug!("Response from queue {:?}", rsp);
+    Ok(())
 }
 
 #[tokio::main]
